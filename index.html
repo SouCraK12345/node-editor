@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Local Monaco Editor - Tree View</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      overflow: hidden;
+      background: #1e1e1e;
+      color: #ccc;
+    }
+
+    /* サイドバーのスタイル */
+    #sidebar {
+      width: 260px;
+      background: #252526;
+      border-right: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    .header {
+      padding: 12px 15px;
+      background: #333;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #aaa;
+    }
+
+    .header button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 2px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .header button:disabled {
+      background: #444;
+      cursor: not-allowed;
+    }
+
+    .header button:hover:not(:disabled) {
+      background: #1177bb;
+    }
+
+    /* ツリー構造のスタイル */
+    #file-list-container {
+      overflow-y: auto;
+      flex-grow: 1;
+      padding: 5px 0;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    li {
+      position: relative;
+    }
+
+    .tree-item {
+      padding: 4px 10px 4px 20px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+      border-left: 3px solid transparent;
+    }
+
+    .tree-item:hover {
+      background: #2a2d2e;
+    }
+
+    .tree-item.active {
+      background: #37373d;
+      border-left-color: #0e639c;
+      color: #fff;
+    }
+
+    .folder-toggle {
+      margin-right: 6px;
+      width: 14px;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    .icon {
+      margin-right: 6px;
+    }
+
+    /* 子要素のインデント */
+    .nested {
+      margin-left: 12px;
+      display: block;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    /* エディタ領域 */
+    #editor-container {
+      flex-grow: 1;
+      height: 100%;
+      position: relative;
+    }
+
+    #editor {
+      width: 100%;
+      height: 100%;
+    }
+
+    #github-container {
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      gap: 10px;
+    }
+
+    .blue-button {
+      background: #2b7da3;
+      color: white;
+      border: none;
+      padding: 7px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    .github-auth {
+      background: #2a2a2a;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      width: 500px;
+
+    }
+
+    dialog:open {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 20px;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
+</head>
+
+<body>
+
+  <div id="sidebar">
+    <div class="header">
+      <span>Explorer</span>
+      <button id="save-btn" disabled>Save</button>
+    </div>
+    <div id="file-list-container">
+      <ul id="file-root"></ul>
+    </div>
+    <div class="header">
+      <span>GitHub</span>
+    </div>
+    <div id="github-container">
+      <button class="blue-button" id="github-connect">Connect to GitHub</button>
+      <button class="blue-button" id="github-clone">Clone Repository</button>
+      <button class="blue-button" id="github-pull">Pull branch</button>
+      <button class="blue-button" id="github-push">Commit & Push</button>
+    </div>
+  </div>
+  <div id="editor-container">
+    <div id="editor"></div>
+  </div>
+
+  <dialog class="github-auth">
+    <p>GitHub Authentication Codeを入力</p>
+    <input type="text" id="github-code" placeholder="github_pat_xxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxx">
+    <button id="github-submit" class="blue-button">Submit</button>
+  </dialog>
+
+  <script>
+    let currentFile = null;
+    let editor = null;
+
+    // 1. Monaco Editor の初期化
+    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      editor = monaco.editor.create(document.getElementById('editor'), {
+        value: "// ファイルを選択してください",
+        language: 'javascript',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        fontSize: 14,
+        minimap: { enabled: false }
+      });
+
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
+      loadFiles();
+    });
+
+    // 2. ファイル一覧を取得してツリーを構築
+    async function loadFiles() {
+      try {
+        const res = await fetch('/api/files');
+        const files = await res.json(); // ['dir1/a.js', 'dir1/subdir/b.js', 'c.txt'] のような配列を想定
+
+        const root = document.getElementById('file-root');
+        root.innerHTML = '';
+
+        // ファイルパスの配列をツリー構造のオブジェクトに変換
+        const treeData = buildTree(files);
+
+        // ツリーをHTMLとして描画
+        renderTree(treeData, root);
+      } catch (err) {
+        console.error("Failed to load files:", err);
+      }
+    }
+
+    function buildTree(paths) {
+      const tree = {};
+      paths.forEach(path => {
+        const parts = path.split('/');
+        let current = tree;
+        parts.forEach((part, index) => {
+          if (!current[part]) {
+            // 最後の要素ならnull（ファイル）、そうでなければオブジェクト（フォルダ）
+            current[part] = (index === parts.length - 1) ? null : {};
+          }
+          current = current[part];
+        });
+      });
+      return tree;
+    }
+
+    function renderTree(node, container, parentPath = '') {
+      const ul = document.createElement('ul');
+      ul.className = parentPath === '' ? '' : 'nested';
+
+      // フォルダを先に、ファイルを後に並び替えて表示
+      const sortedKeys = Object.keys(node).sort((a, b) => {
+        const aIsFile = node[a] === null;
+        const bIsFile = node[b] === null;
+        if (aIsFile !== bIsFile) return aIsFile ? 1 : -1;
+        return a.localeCompare(b);
+      });
+
+      sortedKeys.forEach(name => {
+        const li = document.createElement('li');
+        const isFile = node[name] === null;
+        const fullPath = parentPath ? `${parentPath}/${name}` : name;
+
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'tree-item';
+
+        if (isFile) {
+          itemDiv.innerHTML = `<span class="icon">📄</span><span>${name}</span>`;
+          itemDiv.onclick = (e) => {
+            e.stopPropagation();
+            openFile(fullPath, itemDiv);
+          };
+        } else {
+          // 初期状態で閉じた状態にする
+          itemDiv.innerHTML = `<span class="folder-toggle">▶</span><span class="icon">📁</span><span>${name}</span>`;
+          const childUlContainer = document.createElement('div');
+          childUlContainer.classList.add('hidden');
+
+          // フォルダクリックで開閉
+          itemDiv.onclick = (e) => {
+            e.stopPropagation();
+            const toggle = itemDiv.querySelector('.folder-toggle');
+            const isHidden = childUlContainer.classList.toggle('hidden');
+            toggle.textContent = isHidden ? '▶' : '▼';
+          };
+
+          // サブディレクトリを再帰的に作成
+          renderTree(node[name], childUlContainer, fullPath);
+          li.appendChild(itemDiv);
+          li.appendChild(childUlContainer);
+        }
+
+        if (isFile) li.appendChild(itemDiv);
+        ul.appendChild(li);
+      });
+
+      container.appendChild(ul);
+    }
+
+    // 3. ファイル操作ロジック
+    async function openFile(filename, element) {
+      const urlPath = filename.split('/').map(encodeURIComponent).join('/');
+      const res = await fetch(`/api/file/?path=${urlPath}`);
+
+      if (res.ok) {
+        const content = await res.text();
+        const ext = filename.split('.').pop().toLowerCase();
+
+        const langMap = {
+          'js': 'javascript', 'ts': 'typescript', 'html': 'html',
+          'css': 'css', 'json': 'json', 'md': 'markdown', 'py': 'python'
+        };
+
+        monaco.editor.setModelLanguage(editor.getModel(), langMap[ext] || 'plaintext');
+        editor.setValue(content);
+        currentFile = filename;
+
+        document.querySelectorAll('.tree-item').forEach(el => el.classList.remove('active'));
+        element.classList.add('active');
+        document.getElementById('save-btn').disabled = false;
+      } else {
+        alert('ファイルの読み込みに失敗しました');
+      }
+    }
+
+    async function saveFile() {
+      if (!currentFile) return;
+
+      const content = editor.getValue();
+      const urlPath = currentFile.split('/').map(encodeURIComponent).join('/');
+
+      const res = await fetch(`/api/file/?path=${urlPath}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content })
+      });
+
+      if (res.ok) {
+        const btn = document.getElementById('save-btn');
+        const originalText = btn.textContent;
+        btn.textContent = 'Saved!';
+        btn.style.backgroundColor = '#28a745';
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.backgroundColor = '';
+        }, 1500);
+      } else {
+        alert('保存に失敗しました');
+      }
+    }
+
+    document.getElementById('save-btn').onclick = saveFile;
+
+    document.querySelector('#github-connect').onclick = () => {
+      const dialog = document.querySelector('dialog');
+      dialog.showModal();
+    };
+    document.querySelector('#github-clone').onclick = () => {
+      const repoUrl = prompt('クローンするGitHubリポジトリのURLを入力してください');
+      if (repoUrl) {
+        fetch('/api/github-clone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoUrl })
+        }).then(async res => {
+          const result = await res.json();
+          if (result.success) {
+            alert('リポジトリのクローンに成功しました');
+            loadFiles(); // クローン後にファイルツリーを更新
+          } else {
+            alert('リポジトリのクローンに失敗しました');
+          }
+        }).catch(err => {
+          console.error('GitHubクローンエラー:', err);
+          alert('リポジトリのクローン中にエラーが発生しました');
+        });
+      }
+    };
+
+    document.querySelector('#github-pull').onclick = () => {
+      branch = "main";
+      if (branch) {
+        fetch('/api/github-pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch })
+        }).then(async res => {
+          const result = await res.json();
+          if (result.success) {
+            alert('ブランチのプルに成功しました');
+            loadFiles(); // プル後にファイルツリーを更新
+          } else {
+            alert('ブランチのプルに失敗しました');
+          }
+        }).catch(err => {
+          console.error('GitHubプルエラー:', err);
+          alert('ブランチのプル中にエラーが発生しました');
+        });
+      }
+    };
+
+    document.querySelector('#github-push').onclick = () => {
+      const commitMessage = prompt('コミットメッセージを入力してください');
+      if (commitMessage) {
+        fetch('/api/github-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ commitMessage })
+        }).then(async res => {
+          const result = await res.json();
+          if (result.success) {
+            alert('コミットとプッシュに成功しました');
+          } else {
+            alert('コミットとプッシュに失敗しました');
+          }
+        }).catch(err => {
+          console.error('GitHubプッシュエラー:', err);
+          alert('コミットとプッシュ中にエラーが発生しました');
+        });
+      }
+    };
+
+    document.querySelector('#github-submit').onclick = () => {
+      const code = document.getElementById('github-code').value.trim();
+      if (code) {
+        // ここでGitHub認証コードをサーバーに送信して処理する
+        document.querySelector('dialog').close();
+        fetch('/api/github-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        }).then(async res => {
+          const result = await res.json();
+          if (result.success) {
+            alert('GitHub認証に成功しました');
+          } else {
+            alert('GitHub認証に失敗しました');
+          }
+        }).catch(err => {
+          console.error('GitHub認証エラー:', err);
+          alert('GitHub認証中にエラーが発生しました');
+        });
+      } else {
+        alert('GitHub Codeを入力してください');
+      }
+    };
+  </script>
+
+</body>
+
+</html>
