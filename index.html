@@ -158,6 +158,34 @@
       gap: 10px;
       padding: 20px;
     }
+
+    .context-menu {
+      position: fixed;
+      z-index: 1000;
+      min-width: 180px;
+      background: #2b2b2b;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      padding: 4px 0;
+      display: none;
+    }
+
+    .context-menu button {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: none;
+      color: #ddd;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .context-menu button:hover {
+      background: #094771;
+      color: #fff;
+    }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
 </head>
@@ -192,9 +220,12 @@
     <button id="github-submit" class="blue-button">Submit</button>
   </dialog>
 
+  <div id="explorer-context-menu" class="context-menu"></div>
+
   <script>
     let currentFile = null;
     let editor = null;
+    let contextMenuTarget = { path: '', isFile: false };
 
     // 1. Monaco Editor の初期化
     require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
@@ -273,6 +304,11 @@
             e.stopPropagation();
             openFile(fullPath, itemDiv);
           };
+          itemDiv.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showContextMenu(e.clientX, e.clientY, { path: fullPath, isFile: true });
+          };
         } else {
           // 初期状態で閉じた状態にする
           itemDiv.innerHTML = `<span class="folder-toggle">▶</span><span class="icon">📁</span><span>${name}</span>`;
@@ -286,6 +322,11 @@
             const isHidden = childUlContainer.classList.toggle('hidden');
             toggle.textContent = isHidden ? '▶' : '▼';
           };
+          itemDiv.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showContextMenu(e.clientX, e.clientY, { path: fullPath, isFile: false });
+          };
 
           // サブディレクトリを再帰的に作成
           renderTree(node[name], childUlContainer, fullPath);
@@ -298,6 +339,79 @@
       });
 
       container.appendChild(ul);
+    }
+
+    function showContextMenu(x, y, target) {
+      const menu = document.getElementById('explorer-context-menu');
+      contextMenuTarget = target;
+      const baseLabel = target.path ? target.path.split('/').pop() : 'root';
+
+      menu.innerHTML = `
+        <button data-action="new-file">新規ファイルを作成 (${baseLabel})</button>
+        <button data-action="new-folder">新規フォルダを作成 (${baseLabel})</button>
+        ${target.path ? '<button data-action="delete">削除</button>' : ''}
+      `;
+      menu.style.left = `${x}px`;
+      menu.style.top = `${y}px`;
+      menu.style.display = 'block';
+    }
+
+    function hideContextMenu() {
+      const menu = document.getElementById('explorer-context-menu');
+      menu.style.display = 'none';
+    }
+
+    async function createItem(type) {
+      const isFile = type === 'file';
+      const name = prompt(isFile ? '新しいファイル名を入力してください' : '新しいフォルダ名を入力してください');
+      if (!name) return;
+      if (name.includes('/') || name.includes('\\')) {
+        alert('名前に / や \\ は使用できません');
+        return;
+      }
+
+      const basePath = contextMenuTarget.path && !contextMenuTarget.isFile
+        ? contextMenuTarget.path
+        : contextMenuTarget.path
+          ? contextMenuTarget.path.split('/').slice(0, -1).join('/')
+          : '';
+      const fullPath = basePath ? `${basePath}/${name}` : name;
+
+      const res = await fetch('/api/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: fullPath, type })
+      });
+      if (res.ok) {
+        await loadFiles();
+      } else {
+        const result = await res.json().catch(() => ({}));
+        alert(result.error || '作成に失敗しました');
+      }
+    }
+
+    async function deleteItem() {
+      if (!contextMenuTarget.path) return;
+      const confirmed = confirm(`"${contextMenuTarget.path}" を削除しますか？`);
+      if (!confirmed) return;
+
+      const res = await fetch('/api/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: contextMenuTarget.path })
+      });
+
+      if (res.ok) {
+        if (currentFile === contextMenuTarget.path) {
+          currentFile = null;
+          editor.setValue('// ファイルを選択してください');
+          document.getElementById('save-btn').disabled = true;
+        }
+        await loadFiles();
+      } else {
+        const result = await res.json().catch(() => ({}));
+        alert(result.error || '削除に失敗しました');
+      }
     }
 
     // 3. ファイル操作ロジック
@@ -447,6 +561,34 @@
         alert('GitHub Codeを入力してください');
       }
     };
+
+    const fileListContainer = document.getElementById('file-list-container');
+    fileListContainer.oncontextmenu = (e) => {
+      if (e.target.closest('.tree-item')) return;
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, { path: '', isFile: false });
+    };
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('#explorer-context-menu')) {
+        hideContextMenu();
+      }
+    });
+
+    document.getElementById('explorer-context-menu').addEventListener('click', async (e) => {
+      const action = e.target.dataset.action;
+      if (!action) return;
+
+      hideContextMenu();
+
+      if (action === 'new-file') {
+        await createItem('file');
+      } else if (action === 'new-folder') {
+        await createItem('folder');
+      } else if (action === 'delete') {
+        await deleteItem();
+      }
+    });
   </script>
 
 </body>
