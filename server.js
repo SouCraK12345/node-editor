@@ -15,6 +15,19 @@ if (!fs.existsSync(WORKSPACE_DIR)) {
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 }
 
+function resolveSafePath(targetPath) {
+  if (!targetPath || typeof targetPath !== 'string') return null;
+  const normalizedPath = targetPath.split('/').join(path.sep);
+  const absolutePath = path.resolve(WORKSPACE_DIR, normalizedPath);
+  const relativePath = path.relative(WORKSPACE_DIR, absolutePath);
+
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  return absolutePath;
+}
+
 // サブフォルダも含めて再帰的にファイル一覧を取得する関数
 function getFilesRecursive(dir, baseDir, fileList = []) {
   const files = fs.readdirSync(dir);
@@ -47,15 +60,10 @@ app.get('/api/files', (req, res) => {
 
 // 2. ファイル読み込み API (クエリパラメータ: ?path=... を使用)
 app.get('/api/file', (req, res) => {
-  // クエリパラメータ 'path' から取得
-  const filepath = req.query.path;
-
-  // ディレクトリトラバーサル対策
-  if (!filepath || typeof filepath !== 'string' || filepath.includes('..')) {
+  const absolutePath = resolveSafePath(req.query.path);
+  if (!absolutePath) {
     return res.status(400).send('Invalid filename');
   }
-
-  const absolutePath = path.join(WORKSPACE_DIR, filepath);
 
   try {
     if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
@@ -71,13 +79,10 @@ app.get('/api/file', (req, res) => {
 
 // 3. ファイル保存 API (クエリパラメータ: ?path=... を使用)
 app.post('/api/file', (req, res) => {
-  const filepath = req.query.path;
-
-  if (!filepath || typeof filepath !== 'string' || filepath.includes('..')) {
+  const absolutePath = resolveSafePath(req.query.path);
+  if (!absolutePath) {
     return res.status(400).send('Invalid filename');
   }
-
-  const absolutePath = path.join(WORKSPACE_DIR, filepath);
   const content = req.body.content || '';
 
   try {
@@ -90,6 +95,52 @@ app.post('/api/file', (req, res) => {
     res.send('Saved successfully');
   } catch (error) {
     res.status(500).send('Failed to save file');
+  }
+});
+
+app.post('/api/create', (req, res) => {
+  const { path: targetPath, type } = req.body || {};
+  const absolutePath = resolveSafePath(targetPath);
+
+  if (!absolutePath || !['file', 'folder'].includes(type)) {
+    return res.status(400).json({ error: 'Invalid request' });
+  }
+
+  try {
+    if (fs.existsSync(absolutePath)) {
+      return res.status(409).json({ error: 'Path already exists' });
+    }
+
+    if (type === 'folder') {
+      fs.mkdirSync(absolutePath, { recursive: true });
+    } else {
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+      fs.writeFileSync(absolutePath, '', 'utf-8');
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create item' });
+  }
+});
+
+app.post('/api/delete', (req, res) => {
+  const { path: targetPath } = req.body || {};
+  const absolutePath = resolveSafePath(targetPath);
+
+  if (!absolutePath) {
+    return res.status(400).json({ error: 'Invalid request' });
+  }
+
+  try {
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).json({ error: 'Path not found' });
+    }
+
+    fs.rmSync(absolutePath, { recursive: true, force: false });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete item' });
   }
 });
 
